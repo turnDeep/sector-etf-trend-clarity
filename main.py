@@ -1,5 +1,10 @@
 # 必要なライブラリのインポート
 import yfinance as yf
+from curl_cffi import requests
+
+# yfinanceが内部で使うrequestsセッションをcurl_cffiに置き換える
+yf.ticker._requests = requests.Session()
+
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
@@ -15,29 +20,50 @@ sector_etfs = ["XLK", "XLY", "XLV", "XLP", "XLB", "XLU", "XLI", "XLC", "XLRE", "
 
 # すべてのデータを1つのDataFrameに収集する
 def get_all_data(etfs, period='1y'):
-    all_data = {}
-    for ticker in etfs:
-        try:
-            # progress=Falseで進捗バーを非表示
-            data = yf.download(ticker, period=period, progress=False)
-            if not data.empty:
-                # 'Adj Close'を優先的に使用、なければ'Close'を使用
-                if 'Adj Close' in data.columns:
-                    all_data[ticker] = data['Adj Close']
-                elif 'Close' in data.columns:
-                    print(f"{ticker}: 'Adj Close' データが取得できませんでした。代わりに 'Close' を使用します。")
-                    all_data[ticker] = data['Close']
-                else:
-                    print(f"{ticker}: 価格データが取得できませんでした。")
-        except Exception as e:
-            print(f"{ticker}: データ取得エラー - {str(e)}")
-    
-    return pd.DataFrame(all_data)
+    try:
+        # Download all tickers at once
+        data = yf.download(
+            tickers=etfs,
+            period=period,
+            progress=False,
+            timeout=30,
+        )
+
+        if data.empty:
+            print("Warning: yfinance.download returned an empty DataFrame.")
+            return pd.DataFrame()
+
+        # Extract 'Adj Close' and 'Close' data.
+        # The result of yf.download for multiple tickers is a multi-level column DF.
+        adj_close = data.get('Adj Close')
+        close = data.get('Close')
+
+        # Create a result DataFrame
+        result_df = pd.DataFrame(index=data.index)
+
+        # For each ticker, prefer 'Adj Close', but use 'Close' if it's not available or all NaN
+        for ticker in etfs:
+            if adj_close is not None and ticker in adj_close.columns and not adj_close[ticker].isnull().all():
+                result_df[ticker] = adj_close[ticker]
+            elif close is not None and ticker in close.columns and not close[ticker].isnull().all():
+                print(f"{ticker}: 'Adj Close' データが取得できませんでした。代わりに 'Close' を使用します。")
+                result_df[ticker] = close[ticker]
+            else:
+                print(f"{ticker}: 価格データが取得できませんでした。")
+
+        if result_df.empty:
+            print("Error: Could not construct a valid DataFrame from downloaded data.")
+
+        return result_df.dropna(how='all') # Drop rows that are all NaN
+
+    except Exception as e:
+        print(f"An error occurred in get_all_data: {str(e)}")
+        return pd.DataFrame()
 
 # データを取得する関数
 def get_data(ticker, period='1y'):
     try:
-        data = yf.download(ticker, period=period, progress=False)
+        data = yf.download(ticker, period=period, progress=False, timeout=30)
         if not data.empty:
             if 'Adj Close' in data.columns:
                 return data[['Adj Close']]
